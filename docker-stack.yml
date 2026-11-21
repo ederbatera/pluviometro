@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  pluviometro-web:
+    image: seu-usuario/pluviometro-ema:latest
+    networks:
+      - rede_mariadb
+      - rede_tunnel
+    volumes:
+      - pluviometro_queue:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: "3306"
+      MARIADB_DATABASE: pluviometro
+      MARIADB_USER: root
+      MARIADB_PASSWORD: "ALTERE_PARA_SUA_SENHA"
+      SQLITE_QUEUE_PATH: /app/data/queue.db
+      TZ_STATION: America/Sao_Paulo
+      # Opcional: defina para fixar a chave de ingestão via ambiente em vez de gerar pela aba Raspberry Pi
+      # INGEST_API_KEY: "sua-chave-secreta"
+      # Opcional: se não definir, o primeiro login criará o usuário na tabela AdminUser do MariaDB
+      # ADMIN_PASSWORD: "sua-senha-admin"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+
+  # Opcional: se quiser subir o Cloudflare Tunnel na mesma stack apontando para http://pluviometro-web:3000
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel --no-autoupdate run
+  #   networks:
+  #     - rede_tunnel
+  #   environment:
+  #     TUNNEL_TOKEN: "SEU_CLOUDFLARE_TUNNEL_TOKEN"
+  #   deploy:
+  #     replicas: 1
+  #     restart_policy:
+  #       condition: any
+
+volumes:
+  pluviometro_queue:
+
+networks:
+  rede_mariadb:
+    external: true
+  rede_tunnel:
+    external: true

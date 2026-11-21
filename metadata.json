@@ -1,0 +1,8 @@
+{
+  "name": "Pluviômetro | EMA",
+  "description": "Sistema leve e assíncrono de monitoramento pluviométrico em Node.js, Prisma, React e TypeScript com fila offline resiliente para Raspberry Pi e gráficos de intensidade e acumulados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

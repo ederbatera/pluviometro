@@ -1,0 +1,88 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model StationConfig {
+  id            String   @id @default("default") @db.VarChar(64)
+  name          String   @default("Estação Principal") @db.VarChar(120)
+  location      String   @default("Jardim / Ponto 01") @db.VarChar(160)
+  mmPerPulse    Float    @default(0.25)
+  timezone      String   @default("America/Sao_Paulo") @db.VarChar(64)
+  ingestKeyHash String?  @db.VarChar(255)
+  ingestKeyHint String?  @db.VarChar(64)
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+}
+
+model AdminUser {
+  id           Int           @id @default(autoincrement())
+  username     String        @unique @db.VarChar(64)
+  displayName  String        @db.VarChar(120)
+  passwordHash String        @db.VarChar(255)
+  role         String        @default("admin") @db.VarChar(32)
+  sessions     AuthSession[]
+  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime      @default(now())
+}
+
+model AuthSession {
+  id        String     @id @db.VarChar(64)
+  tokenHash String     @unique @db.VarChar(64)
+  userId    Int?
+  user      AdminUser? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  username  String     @db.VarChar(64)
+  role      String     @default("admin") @db.VarChar(32)
+  expiresAt DateTime
+  createdAt DateTime   @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model RainPulse {
+  id            Int       @id @default(autoincrement())
+  stationId     String    @default("default") @db.VarChar(64)
+  eventUid      String    @unique @db.VarChar(128)
+  mm            Float
+  timestampUnix Int
+  eventAt       DateTime
+  queuedAt      DateTime?
+  source        String    @default("raspberry") @db.VarChar(32)
+  createdAt     DateTime  @default(now())
+
+  @@index([eventAt])
+  @@index([stationId, eventAt])
+  @@index([timestampUnix])
+}
+
+model HourlySummary {
+  id         Int      @id @default(autoincrement())
+  stationId  String   @default("default") @db.VarChar(64)
+  hourKey    String   @unique @db.VarChar(32)
+  hourStart  DateTime
+  totalMm    Float    @default(0)
+  pulseCount Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@index([hourStart])
+  @@index([stationId, hourStart])
+}
+
+model DailySummary {
+  id              Int      @id @default(autoincrement())
+  stationId       String   @default("default") @db.VarChar(64)
+  dayKey          String   @unique @db.VarChar(16)
+  dayStart        DateTime
+  totalMm         Float    @default(0)
+  pulseCount      Int      @default(0)
+  peakIntensityMm Float    @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@index([dayStart])
+  @@index([stationId, dayStart])
+}

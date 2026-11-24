@@ -10,7 +10,7 @@ RUN apt-get update \
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci
+RUN if [ -f package-lock.json ]; then npm ci --legacy-peer-deps --no-audit --no-fund; else npm install --legacy-peer-deps --no-audit --no-fund; fi
 
 COPY . .
 

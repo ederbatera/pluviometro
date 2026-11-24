@@ -19,11 +19,22 @@ import uuid
 from gpiozero import Button
 import requests
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(line_buffering=True, write_through=True)
 
-def load_local_env() -> None:
-    env_path = Path(__file__).resolve().parent / ".env"
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def log(message: str) -> None:
+    hora_local = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
+    print(f"[{hora_local}] {message}", flush=True)
+
+
+def load_local_env() -> Path | None:
+    env_path = SCRIPT_DIR / ".env"
     if not env_path.is_file():
-        return
+        return None
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -37,18 +48,28 @@ def load_local_env() -> None:
             value = value[1:-1]
         if key:
             os.environ.setdefault(key, value)
+    return env_path
 
 
-load_local_env()
+def resolve_queue_db_path() -> str:
+    raw = os.environ.get("PLUVIOMETRO_QUEUE_DB", "./pluviometro_fila.db").strip() or "./pluviometro_fila.db"
+    db_path = Path(raw)
+    if not db_path.is_absolute():
+        db_path = SCRIPT_DIR / db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return str(db_path)
+
+
+LOADED_ENV_PATH = load_local_env()
 
 GPIO_PIN = int(os.environ.get("PLUVIOMETRO_GPIO", "17"))
 BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_DEBOUNCE", "0.2"))
 MM_POR_PULSO = float(os.environ.get("PLUVIOMETRO_MM_POR_PULSO", "0.25"))
 STATION_ID = os.environ.get("PLUVIOMETRO_STATION_ID", "default")
 
-API_URL = os.environ.get("PLUVIOMETRO_API_URL", "https://SEU-SERVIDOR/api/pulses/batch")
-API_KEY = os.environ.get("PLUVIOMETRO_API_KEY", "")
-QUEUE_DB_PATH = os.environ.get("PLUVIOMETRO_QUEUE_DB", "./pluviometro_fila.db")
+API_URL = os.environ.get("PLUVIOMETRO_API_URL", "https://SEU-SERVIDOR/api/pulses/batch").strip()
+API_KEY = os.environ.get("PLUVIOMETRO_API_KEY", "").strip()
+QUEUE_DB_PATH = resolve_queue_db_path()
 
 BATCH_SIZE = 50
 BACKOFF_STEPS = [1, 2, 5, 15, 30]
@@ -90,6 +111,7 @@ def enqueue_pulse(mm: float) -> None:
         )
         queue_conn.commit()
     wake_event.set()
+    log(f"Pulso registrado ({mm} mm) -> {event_uid}")
 
 
 def sender_worker() -> None:
@@ -98,15 +120,20 @@ def sender_worker() -> None:
     failure_count = 0
 
     while not stop_event.is_set():
+        wake_event.clear()
         with db_lock:
             batch = queue_conn.execute(
                 "SELECT id, event_uid, station_id, mm, timestamp_unix, queued_at_unix FROM pulse_queue ORDER BY id ASC LIMIT ?",
                 (BATCH_SIZE,),
             ).fetchall()
 
-        if not batch or not API_KEY:
+        if not batch:
             wake_event.wait(timeout=30)
-            wake_event.clear()
+            continue
+
+        if not API_KEY or API_KEY == "COLE_SUA_CHAVE_AQUI":
+            log(f"[FILA] {len(batch)} pulso(s) aguardando PLUVIOMETRO_API_KEY válida.")
+            wake_event.wait(timeout=30)
             continue
 
         row_ids = [r[0] for r in batch]
@@ -138,20 +165,27 @@ def sender_worker() -> None:
                     queue_conn.execute(f"DELETE FROM pulse_queue WHERE id IN ({placeholders})", row_ids)
                     queue_conn.commit()
                 failure_count = 0
+                log(f"[NODE SYNC] {len(row_ids)} pulso(s) enviado(s) em tempo real (HTTP {resp.status_code}).")
                 continue
+            log(f"[ERRO HTTP {resp.status_code}] Mantendo {len(row_ids)} pulso(s) na fila SQLite.")
             failure_count += 1
-        except requests.RequestException:
+        except requests.RequestException as exc:
             failure_count += 1
+            log(f"[OFFLINE] Node inacessível ({exc}). {len(row_ids)} pulso(s) preservados na fila SQLite.")
 
         wait_seconds = BACKOFF_STEPS[min(failure_count - 1, len(BACKOFF_STEPS) - 1)]
         stop_event.wait(timeout=wait_seconds)
 
 
 def registrar_pulso() -> None:
-    enqueue_pulse(MM_POR_PULSO)
+    try:
+        enqueue_pulse(MM_POR_PULSO)
+    except Exception as exc:
+        log(f"[ERRO GPIO] Falha ao gravar pulso na fila SQLite: {exc}")
 
 
 def handle_exit(_signum, _frame) -> None:
+    log("Encerrando monitoramento com segurança...")
     stop_event.set()
     wake_event.set()
     sys.exit(0)
@@ -160,9 +194,11 @@ def handle_exit(_signum, _frame) -> None:
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
+    log(f"Iniciando pluviômetro | GPIO={GPIO_PIN} | Node={API_URL} | Fila={QUEUE_DB_PATH}")
     threading.Thread(target=sender_worker, daemon=True).start()
     sensor = Button(GPIO_PIN, pull_up=True, bounce_time=BOUNCE_TIME)
     sensor.when_pressed = registrar_pulso
+    log("Monitorando pulsos no sensor...")
     while not stop_event.is_set():
         stop_event.wait(timeout=60)
 `;

@@ -234,7 +234,6 @@ apiRouter.get('/pulses/export.csv', requireAuth, async (_req: Request, res: Resp
     }
 
     const rows = await prisma.rainPulse.findMany({
-      where: { stationId: 'default' },
       orderBy: [{ eventAt: 'desc' }, { id: 'desc' }],
       take: 5000,
     });
@@ -575,9 +574,9 @@ apiRouter.post('/demo/reset', requireAuth, async (_req: Request, res: Response) 
     }
 
     await prisma.$transaction([
-      prisma.rainPulse.deleteMany({ where: { stationId: 'default' } }),
-      prisma.hourlySummary.deleteMany({ where: { stationId: 'default' } }),
-      prisma.dailySummary.deleteMany({ where: { stationId: 'default' } }),
+      prisma.rainPulse.deleteMany(),
+      prisma.hourlySummary.deleteMany(),
+      prisma.dailySummary.deleteMany(),
     ]);
     void realtimeHub.notifyTelemetryChanged();
     res.json({ status: 'sucesso' });

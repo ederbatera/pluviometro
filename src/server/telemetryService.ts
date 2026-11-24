@@ -194,21 +194,18 @@ export async function getDashboardTelemetry(
   ] = await Promise.all([
     prisma.hourlySummary.findMany({
       where: {
-        stationId: 'default',
         hourKey: { gte: minHourKey24 },
       },
       orderBy: { hourKey: 'asc' },
     }),
     prisma.dailySummary.findMany({
       where: {
-        stationId: 'default',
         dayKey: { gte: earliestDailyKey },
       },
       orderBy: { dayKey: 'asc' },
     }),
     prisma.rainPulse.findMany({
       where: {
-        stationId: 'default',
         eventAt: { gte: twoHoursAgo },
       },
       select: { mm: true, eventAt: true },
@@ -216,17 +213,14 @@ export async function getDashboardTelemetry(
     }),
     isAuthenticated
       ? prisma.rainPulse.findMany({
-          where: { stationId: 'default' },
           orderBy: [{ eventAt: 'desc' }, { id: 'desc' }],
           take: 30,
         })
       : Promise.resolve([]),
     prisma.dailySummary.aggregate({
-      where: { stationId: 'default' },
       _sum: { totalMm: true, pulseCount: true },
     }),
     prisma.rainPulse.findFirst({
-      where: { stationId: 'default' },
       orderBy: [{ eventAt: 'desc' }, { id: 'desc' }],
       select: { eventAt: true },
     }),

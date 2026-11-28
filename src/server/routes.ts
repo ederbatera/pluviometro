@@ -115,13 +115,20 @@ async function verifyIngestionAuth(req: Request): Promise<boolean> {
 export const apiRouter = Router();
 
 apiRouter.get('/health', async (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   const mariaOk = isMariaDbConnected() || (await ensureDatabaseReady());
   const sqliteDepth = getSqliteQueueCount();
+  let rainPulsesCount: number | null = null;
+  if (mariaOk) {
+    rainPulsesCount = await prisma.rainPulse.count().catch(() => null);
+  }
   res.json({
     status: mariaOk ? 'ok' : 'degraded',
     mariadb: mariaOk ? 'connected' : 'disconnected',
     sqliteQueue: 'ready',
     pendingInSqlite: sqliteDepth,
+    rainPulsesCount,
     detail: mariaOk ? null : getLastMariaDbError(),
     timestamp: new Date().toISOString(),
   });
@@ -129,6 +136,8 @@ apiRouter.get('/health', async (_req: Request, res: Response) => {
 
 // --- Auth Endpoints (MariaDB-backed AdminUser + AuthSession) ---
 apiRouter.get('/auth/status', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   try {
     const status = await getAuthStatus(req);
     res.json(status);
@@ -214,6 +223,8 @@ apiRouter.post('/auth/logout', async (req: Request, res: Response) => {
 
 // Public dashboard summary + gated logs/station details when Bearer token is valid
 apiRouter.get('/telemetry', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   try {
     const user = await resolveSession(req);
     const telemetry = await getDashboardTelemetry(Boolean(user));

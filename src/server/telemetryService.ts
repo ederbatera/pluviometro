@@ -270,8 +270,8 @@ export async function getDashboardTelemetry(
     last24hPulses += pulses;
     return {
       key,
-      label: formatHourLabel(date, timeZone),
-      fullLabel: formatFullHourLabel(date, timeZone),
+      label: formatHourLabel(date, activeTz),
+      fullLabel: formatFullHourLabel(date, activeTz),
       mm,
       pulses,
       cumulativeMm: cumulative24h,
@@ -320,7 +320,7 @@ export async function getDashboardTelemetry(
     cumWeek = round2(cumWeek + mm);
     return {
       key: dayKey,
-      label: formatDayShortLabel(dayKey, timeZone),
+      label: formatDayShortLabel(dayKey, activeTz),
       fullDate: formatFullDatePt(dayKey),
       mm,
       pulses: row?.pulseCount ?? 0,

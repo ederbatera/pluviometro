@@ -19,7 +19,10 @@ import {
 import { type IncomingPulse, pulseQueue } from './pulseQueue.ts';
 import { clearSqliteQueue, getSqliteQueueCount } from './sqliteQueue.ts';
 import { realtimeHub } from './realtimeHub.ts';
-import { getDashboardTelemetry } from './telemetryService.ts';
+import {
+  deletePulsesAndRecompute,
+  getDashboardTelemetry,
+} from './telemetryService.ts';
 
 const singlePulseSchema = z.object({
   mm: z.coerce.number().finite().positive().max(50),
@@ -59,6 +62,10 @@ const setupAdminSchema = z.object({
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(64),
   password: z.string().min(1).max(128),
+});
+
+const deletePulsesSchema = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1).max(500),
 });
 
 function timingSafeCompareStrings(a: string, b: string): boolean {
@@ -232,6 +239,106 @@ apiRouter.get('/telemetry', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[GET /api/telemetry]', err);
     res.status(500).json({ erro: 'Falha ao carregar telemetria pluviométrica' });
+  }
+});
+
+// Protected pulse listing (Registros)
+apiRouter.get('/pulses', requireAuth, async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  try {
+    if (!(isMariaDbConnected() || (await ensureDatabaseReady()))) {
+      console.warn('[GET /api/pulses] MariaDB indisponível.');
+      res.status(503).json({ erro: 'Banco de dados indisponível no momento.' });
+      return;
+    }
+
+    const rawLimit = Number(req.query.limit ?? 100);
+    const rawOffset = Number(req.query.offset ?? 0);
+    const limit = Number.isFinite(rawLimit) ? Math.min(300, Math.max(1, Math.trunc(rawLimit))) : 100;
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
+    const sourceParam = typeof req.query.source === 'string' ? req.query.source.trim() : 'all';
+    const searchParam = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+
+    const where: {
+      source?: string;
+      OR?: Array<{ eventUid?: { contains: string }; stationId?: { contains: string } }>;
+    } = {};
+
+    if (sourceParam && sourceParam !== 'all') {
+      where.source = sourceParam;
+    }
+    if (searchParam) {
+      where.OR = [
+        { eventUid: { contains: searchParam } },
+        { stationId: { contains: searchParam } },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.rainPulse.findMany({
+        where,
+        orderBy: [{ eventAt: 'desc' }, { id: 'desc' }],
+        take: limit,
+        skip: offset,
+      }),
+      prisma.rainPulse.count({ where }),
+    ]);
+
+    res.json({
+      pulses: rows.map((p) => {
+        const delaySeconds =
+          p.queuedAt != null
+            ? Math.max(0, Math.round((p.createdAt.getTime() - p.queuedAt.getTime()) / 1000))
+            : Math.max(0, Math.round((p.createdAt.getTime() - p.eventAt.getTime()) / 1000));
+        return {
+          id: p.id,
+          stationId: p.stationId,
+          eventUid: p.eventUid,
+          mm: p.mm,
+          timestampUnix: p.timestampUnix,
+          eventAt: p.eventAt.toISOString(),
+          queuedAt: p.queuedAt ? p.queuedAt.toISOString() : null,
+          source: p.source,
+          delaySeconds,
+        };
+      }),
+      total,
+      limit,
+      offset,
+    });
+  } catch (err) {
+    console.error('[GET /api/pulses]', err);
+    res.status(500).json({ erro: 'Falha ao carregar registros de pulsos.' });
+  }
+});
+
+// Protected selective pulse deletion with summary recomputation
+apiRouter.post('/pulses/delete', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const parsed = deletePulsesSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ erro: 'Informe ao menos um pulso válido para exclusão.' });
+      return;
+    }
+
+    if (!(isMariaDbConnected() || (await ensureDatabaseReady()))) {
+      console.warn('[POST /api/pulses/delete] MariaDB indisponível.');
+      res.status(503).json({ erro: 'Banco de dados indisponível no momento.' });
+      return;
+    }
+
+    const result = await deletePulsesAndRecompute(parsed.data.ids);
+    if (result.deletedCount > 0) {
+      void realtimeHub.notifyTelemetryChanged();
+    }
+
+    res.json({
+      status: 'sucesso',
+      ...result,
+    });
+  } catch (err) {
+    console.error('[POST /api/pulses/delete]', err);
+    res.status(500).json({ erro: 'Falha ao excluir pulsos e recalcular acumulados.' });
   }
 });
 

@@ -1,0 +1,24 @@
+services:
+  pluviometro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ederbatera/pluviometro-ema:1.0.0
+    container_name: pluviometro
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SQLITE_QUEUE_PATH: /app/data/queue.db
+      TZ: "${TZ_STATION:-America/Sao_Paulo}"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - pluviometro_queue:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pluviometro_queue:

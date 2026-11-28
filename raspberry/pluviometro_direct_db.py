@@ -43,6 +43,7 @@ load_local_env()
 
 GPIO_PIN = int(os.environ.get("PLUVIOMETRO_GPIO", "17"))
 BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_DEBOUNCE", "0.2"))
+HW_BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_HW_BOUNCE", "0.005"))
 MM_POR_PULSO = float(os.environ.get("PLUVIOMETRO_MM_POR_PULSO", "0.25"))
 STATION_ID = os.environ.get("PLUVIOMETRO_STATION_ID", "default")
 STATION_TZ = ZoneInfo(os.environ.get("TZ_STATION", "America/Sao_Paulo"))
@@ -57,6 +58,8 @@ QUEUE_DB_PATH = os.environ.get("PLUVIOMETRO_QUEUE_DB", "./pluviometro_fila.db")
 BACKOFF_STEPS = [2, 5, 15, 30, 60]
 
 db_lock = threading.Lock()
+pulse_lock = threading.Lock()
+last_pulse_mono = 0.0
 wake_event = threading.Event()
 stop_event = threading.Event()
 
@@ -85,6 +88,12 @@ queue_conn = init_queue_db()
 
 
 def enqueue_pulse() -> None:
+    global last_pulse_mono
+    now_mono = time.monotonic()
+    with pulse_lock:
+        if now_mono - last_pulse_mono < BOUNCE_TIME:
+            return
+        last_pulse_mono = now_mono
     now_unix = int(time.time())
     event_uid = f"{STATION_ID}:{now_unix}:{uuid.uuid4().hex[:8]}"
     with db_lock:
@@ -198,7 +207,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_exit)
 
     threading.Thread(target=flush_to_mariadb, daemon=True).start()
-    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=BOUNCE_TIME)
+    hw_bounce = HW_BOUNCE_TIME if HW_BOUNCE_TIME > 0 else None
+    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=hw_bounce)
     sensor.when_pressed = enqueue_pulse
 
     print(f"Monitorando GPIO {GPIO_PIN} -> Fila SQLite -> MariaDB ({MARIADB_HOST}/{MARIADB_DATABASE})")

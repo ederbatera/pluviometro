@@ -21,8 +21,10 @@ import {
   formatHourLabel,
   getCurrentMonthDayKeysUpToToday,
   getDayKey,
+  getDayStartUtcForKey,
   getFirstDayKeyOfCurrentMonth,
   getHourKey,
+  getHourStartDate,
   getMondayDayKeyOfCurrentWeek,
   getPastDayKeys,
   getZonedParts,
@@ -435,6 +437,7 @@ export async function getDashboardTelemetry(
           : Math.max(0, Math.round((p.createdAt.getTime() - p.eventAt.getTime()) / 1000));
       return {
         id: p.id,
+        stationId: p.stationId,
         eventUid: p.eventUid,
         mm: p.mm,
         timestampUnix: p.timestampUnix,
@@ -446,4 +449,184 @@ export async function getDashboardTelemetry(
     }),
     queueStats: pulseQueue.getStats(),
   };
+}
+
+export interface DeletePulsesResult {
+  deletedCount: number;
+  affectedHours: number;
+  affectedDays: number;
+}
+
+export async function deletePulsesAndRecompute(
+  pulseIds: number[],
+): Promise<DeletePulsesResult> {
+  const uniqueIds = Array.from(
+    new Set(pulseIds.filter((id) => Number.isInteger(id) && id > 0)),
+  );
+  if (uniqueIds.length === 0) {
+    return { deletedCount: 0, affectedHours: 0, affectedDays: 0 };
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const station = await tx.stationConfig.findUnique({
+      where: { id: 'default' },
+      select: { timezone: true },
+    });
+    const timeZone =
+      station?.timezone || process.env.TZ_STATION || 'America/Sao_Paulo';
+
+    const targets = await tx.rainPulse.findMany({
+      where: { id: { in: uniqueIds } },
+      select: { id: true, eventAt: true },
+    });
+
+    if (targets.length === 0) {
+      return { deletedCount: 0, affectedHours: 0, affectedDays: 0 };
+    }
+
+    const affectedHourKeys = new Set<string>();
+    const affectedDayKeys = new Set<string>();
+    let minEventMs = targets[0].eventAt.getTime();
+    let maxEventMs = targets[0].eventAt.getTime();
+
+    for (const target of targets) {
+      const ms = target.eventAt.getTime();
+      if (ms < minEventMs) minEventMs = ms;
+      if (ms > maxEventMs) maxEventMs = ms;
+      affectedHourKeys.add(getHourKey(target.eventAt, timeZone));
+      affectedDayKeys.add(getDayKey(target.eventAt, timeZone));
+    }
+
+    const deleteRes = await tx.rainPulse.deleteMany({
+      where: { id: { in: targets.map((t) => t.id) } },
+    });
+
+    // Fetch all remaining pulses in a safe UTC margin around affected days to recompute exact totals
+    const windowStart = new Date(minEventMs - 36 * 3600 * 1000);
+    const windowEnd = new Date(maxEventMs + 36 * 3600 * 1000);
+    const remainingPulses = await tx.rainPulse.findMany({
+      where: {
+        eventAt: { gte: windowStart, lte: windowEnd },
+      },
+      select: {
+        stationId: true,
+        mm: true,
+        eventAt: true,
+      },
+    });
+
+    const hourlyAgg = new Map<
+      string,
+      { stationId: string; hourStart: Date; totalMm: number; pulseCount: number }
+    >();
+    const dailyAgg = new Map<
+      string,
+      { stationId: string; dayStart: Date; totalMm: number; pulseCount: number }
+    >();
+
+    for (const p of remainingPulses) {
+      const hKey = getHourKey(p.eventAt, timeZone);
+      const dKey = getDayKey(p.eventAt, timeZone);
+
+      if (affectedHourKeys.has(hKey) || affectedDayKeys.has(dKey)) {
+        const existingHour = hourlyAgg.get(hKey);
+        if (existingHour) {
+          existingHour.totalMm += p.mm;
+          existingHour.pulseCount += 1;
+        } else {
+          hourlyAgg.set(hKey, {
+            stationId: p.stationId,
+            hourStart: getHourStartDate(p.eventAt),
+            totalMm: p.mm,
+            pulseCount: 1,
+          });
+        }
+      }
+
+      if (affectedDayKeys.has(dKey)) {
+        const existingDay = dailyAgg.get(dKey);
+        if (existingDay) {
+          existingDay.totalMm += p.mm;
+          existingDay.pulseCount += 1;
+        } else {
+          dailyAgg.set(dKey, {
+            stationId: p.stationId,
+            dayStart: getDayStartUtcForKey(dKey),
+            totalMm: p.mm,
+            pulseCount: 1,
+          });
+        }
+      }
+    }
+
+    const peakByDay = new Map<string, number>();
+    for (const [hKey, agg] of hourlyAgg.entries()) {
+      const dKey = hKey.slice(0, 10);
+      if (affectedDayKeys.has(dKey)) {
+        const currentPeak = peakByDay.get(dKey) ?? 0;
+        if (agg.totalMm > currentPeak) {
+          peakByDay.set(dKey, agg.totalMm);
+        }
+      }
+    }
+
+    for (const hKey of affectedHourKeys) {
+      const agg = hourlyAgg.get(hKey);
+      if (!agg || agg.pulseCount === 0) {
+        await tx.hourlySummary.deleteMany({ where: { hourKey: hKey } });
+      } else {
+        await tx.hourlySummary.upsert({
+          where: { hourKey: hKey },
+          create: {
+            stationId: agg.stationId,
+            hourKey: hKey,
+            hourStart: agg.hourStart,
+            totalMm: Number(agg.totalMm.toFixed(4)),
+            pulseCount: agg.pulseCount,
+          },
+          update: {
+            stationId: agg.stationId,
+            totalMm: Number(agg.totalMm.toFixed(4)),
+            pulseCount: agg.pulseCount,
+          },
+        });
+      }
+    }
+
+    for (const dKey of affectedDayKeys) {
+      const agg = dailyAgg.get(dKey);
+      if (!agg || agg.pulseCount === 0) {
+        await tx.dailySummary.deleteMany({ where: { dayKey: dKey } });
+      } else {
+        const peakIntensityMm = Number(
+          (peakByDay.get(dKey) ?? agg.totalMm).toFixed(2),
+        );
+        await tx.dailySummary.upsert({
+          where: { dayKey: dKey },
+          create: {
+            stationId: agg.stationId,
+            dayKey: dKey,
+            dayStart: agg.dayStart,
+            totalMm: Number(agg.totalMm.toFixed(4)),
+            pulseCount: agg.pulseCount,
+            peakIntensityMm,
+          },
+          update: {
+            stationId: agg.stationId,
+            totalMm: Number(agg.totalMm.toFixed(4)),
+            pulseCount: agg.pulseCount,
+            peakIntensityMm,
+          },
+        });
+      }
+    }
+
+    return {
+      deletedCount: deleteRes.count,
+      affectedHours: affectedHourKeys.size,
+      affectedDays: affectedDayKeys.size,
+    };
+  });
+
+  return result;
 }

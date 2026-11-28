@@ -66,7 +66,10 @@ LOADED_ENV_PATH = load_local_env()
 
 # --- CONFIGURAÇÕES VIA VARIÁVEIS DE AMBIENTE (.env ou sistema) ---
 GPIO_PIN = int(os.environ.get("PLUVIOMETRO_GPIO", "17"))
+# Debounce lógico (bloqueia repique mecânico do reed switch após aceitar um pulso)
 BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_DEBOUNCE", "0.2"))
+# Filtro de ruído elétrico no GPIO/lgpio (curto para não descartar basculadas rápidas com água; 0 desativa)
+HW_BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_HW_BOUNCE", "0.005"))
 MM_POR_PULSO = float(os.environ.get("PLUVIOMETRO_MM_POR_PULSO", "0.25"))
 STATION_ID = os.environ.get("PLUVIOMETRO_STATION_ID", "default")
 
@@ -81,6 +84,8 @@ BATCH_SIZE = 50
 BACKOFF_STEPS = [1, 2, 5, 15, 30]
 
 db_lock = threading.Lock()
+pulse_lock = threading.Lock()
+last_pulse_mono = 0.0
 wake_event = threading.Event()
 stop_event = threading.Event()
 
@@ -222,6 +227,12 @@ def sender_worker() -> None:
 
 
 def registrar_pulso() -> None:
+    global last_pulse_mono
+    now_mono = time.monotonic()
+    with pulse_lock:
+        if now_mono - last_pulse_mono < BOUNCE_TIME:
+            return
+        last_pulse_mono = now_mono
     try:
         enqueue_pulse(MM_POR_PULSO)
     except Exception as exc:
@@ -239,18 +250,19 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
+    hw_bounce = HW_BOUNCE_TIME if HW_BOUNCE_TIME > 0 else None
     env_info = str(LOADED_ENV_PATH) if LOADED_ENV_PATH else "não encontrado (usando env do sistema)"
     key_info = "configurada" if (API_KEY and API_KEY != "COLE_SUA_CHAVE_AQUI") else "AUSENTE"
     log(
         f"Iniciando pluviômetro | GPIO={GPIO_PIN} (pino físico 11 + GND pino 9) | "
-        f"debounce={BOUNCE_TIME}s | {MM_POR_PULSO} mm/pulso | .env={env_info} | "
-        f"API_KEY={key_info} | Node={API_URL} | Fila={QUEUE_DB_PATH}"
+        f"debounce_sw={BOUNCE_TIME}s | debounce_hw={hw_bounce}s | {MM_POR_PULSO} mm/pulso | "
+        f".env={env_info} | API_KEY={key_info} | Node={API_URL} | Fila={QUEUE_DB_PATH}"
     )
 
     worker = threading.Thread(target=sender_worker, daemon=True)
     worker.start()
 
-    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=BOUNCE_TIME)
+    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=hw_bounce)
     sensor.when_pressed = registrar_pulso
     log("Monitorando pulsos no sensor...")
 

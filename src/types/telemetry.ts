@@ -58,6 +58,7 @@ export interface VelocityPoint {
 
 export interface RecentPulseDto {
   id: number;
+  stationId?: string;
   eventUid: string;
   mm: number;
   timestampUnix: number;

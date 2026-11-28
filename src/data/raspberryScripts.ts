@@ -64,6 +64,7 @@ LOADED_ENV_PATH = load_local_env()
 
 GPIO_PIN = int(os.environ.get("PLUVIOMETRO_GPIO", "17"))
 BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_DEBOUNCE", "0.2"))
+HW_BOUNCE_TIME = float(os.environ.get("PLUVIOMETRO_HW_BOUNCE", "0.005"))
 MM_POR_PULSO = float(os.environ.get("PLUVIOMETRO_MM_POR_PULSO", "0.25"))
 STATION_ID = os.environ.get("PLUVIOMETRO_STATION_ID", "default")
 
@@ -75,6 +76,8 @@ BATCH_SIZE = 50
 BACKOFF_STEPS = [1, 2, 5, 15, 30]
 
 db_lock = threading.Lock()
+pulse_lock = threading.Lock()
+last_pulse_mono = 0.0
 wake_event = threading.Event()
 stop_event = threading.Event()
 
@@ -178,6 +181,12 @@ def sender_worker() -> None:
 
 
 def registrar_pulso() -> None:
+    global last_pulse_mono
+    now_mono = time.monotonic()
+    with pulse_lock:
+        if now_mono - last_pulse_mono < BOUNCE_TIME:
+            return
+        last_pulse_mono = now_mono
     try:
         enqueue_pulse(MM_POR_PULSO)
     except Exception as exc:
@@ -194,9 +203,13 @@ def handle_exit(_signum, _frame) -> None:
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
-    log(f"Iniciando pluviômetro | GPIO={GPIO_PIN} | Node={API_URL} | Fila={QUEUE_DB_PATH}")
+    hw_bounce = HW_BOUNCE_TIME if HW_BOUNCE_TIME > 0 else None
+    log(
+        f"Iniciando pluviômetro | GPIO={GPIO_PIN} | debounce_sw={BOUNCE_TIME}s | "
+        f"debounce_hw={hw_bounce}s | Node={API_URL} | Fila={QUEUE_DB_PATH}"
+    )
     threading.Thread(target=sender_worker, daemon=True).start()
-    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=BOUNCE_TIME)
+    sensor = Button(GPIO_PIN, pull_up=True, bounce_time=hw_bounce)
     sensor.when_pressed = registrar_pulso
     log("Monitorando pulsos no sensor...")
     while not stop_event.is_set():

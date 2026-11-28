@@ -864,7 +864,11 @@ export default function App() {
 
         {/* Restricted Tab: Registros (Rendered only when authenticated) */}
         {activeTab === 'logs' && isAuthenticated && authToken && telemetry && (
-          <PulseLogTable pulses={telemetry.recentPulses} authToken={authToken} />
+          <PulseLogTable
+            pulses={telemetry.recentPulses}
+            authToken={authToken}
+            onPulsesChanged={() => fetchTelemetry()}
+          />
         )}
 
         {/* Restricted Tab: Raspberry Pi (Rendered only when authenticated) */}

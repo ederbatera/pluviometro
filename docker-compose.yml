@@ -1,0 +1,44 @@
+services:
+  pluviometro-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pluviometro-ema:latest
+    container_name: pluviometro-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SQLITE_QUEUE_PATH: /app/data/queue.db
+      TZ: "${TZ_STATION:-America/Sao_Paulo}"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - pluviometro_queue:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - traefik_public
+
+  # Opcional: descomente para subir o Cloudflare Tunnel neste mesmo Compose (defina TUNNEL_TOKEN no .env)
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: pluviometro-cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: "${TUNNEL_TOKEN}"
+  #   depends_on:
+  #     pluviometro-web:
+  #       condition: service_healthy
+  #   networks:
+  #     - traefik_public
+
+volumes:
+  pluviometro_queue:
+
+networks:
+  traefik_public:
+    external: true
